@@ -2,11 +2,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http.Json;
 
 using Data;
+using Model;
 using Service;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Sætter CORS så API'en kan bruges fra andre domæner
 var AllowSomeStuff = "_AllowSomeStuff";
 builder.Services.AddCors(options =>
 {
@@ -17,77 +17,84 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Tilføj DbContext factory som service.
-builder.Services.AddDbContext<BookContext>(options =>
+builder.Services.AddDbContext<PostContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("ContextSQLite")));
 
-// Tilføj DataService så den kan bruges i endpoints
-builder.Services.AddScoped<DataService>();
 
-// Dette kode kan bruges til at fjerne "cykler" i JSON objekterne.
-/*
-builder.Services.Configure<JsonOptions>(options =>
-{
-    // Her kan man fjerne fejl der opstår, når man returnerer JSON med objekter,
-    // der refererer til hinanden i en cykel.
-    // (altså dobbelrettede associeringer)
-    options.SerializerOptions.ReferenceHandler = 
-        System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
-});
-*/
+builder.Services.AddScoped<DataService>();
 
 var app = builder.Build();
 
-// Seed data hvis nødvendigt.
+
 using (var scope = app.Services.CreateScope())
 {
     var dataService = scope.ServiceProvider.GetRequiredService<DataService>();
-    dataService.SeedData(); // Fylder data på, hvis databasen er tom. Ellers ikke.
+    dataService.SeedData();
 }
 
 app.UseHttpsRedirection();
 app.UseCors(AllowSomeStuff);
 
-// Middlware der kører før hver request. Sætter ContentType for alle responses til "JSON".
 app.Use(async (context, next) =>
 {
     context.Response.ContentType = "application/json; charset=utf-8";
     await next(context);
 });
 
+app.MapGet("/", () => new { message = "Hello World!" });
 
-// DataService fås via "Dependency Injection" (DI)
-app.MapGet("/", (DataService service) =>
+// ALT TIL POST HERUNDER
+
+app.MapGet("/api/posts", (DataService service) =>
 {
-    return new { message = "Hello World!" };
+    return service.GetPosts();
 });
 
-app.MapGet("/api/books", (DataService service) =>
+app.MapGet("/api/posts/{id:int}", (DataService service, int id) =>
 {
-    return service.GetBooks().Select(b => new { 
-        bookId = b.BookId, 
-        title = b.Title, 
-        author = new {
-            b.Author.AuthorId, b.Author.Fullname
-        } 
-    });
+    var post = service.GetPost(id);
+    return post is null ? Results.NotFound(new { message = "Post not found" }) : Results.Ok(post);
 });
 
-app.MapGet("/api/authors", (DataService service) =>
+app.MapPost("/api/posts", (DataService service, NewPostData data) =>
 {
-    return service.GetAuthors().Select(a => new { a.AuthorId, a.Fullname });
+    var message = service.CreatePost(data.author, data.title, data.content);
+    return new { message };
 });
 
-app.MapGet("/api/authors/{id}", (DataService service, int id) => {
-    return service.GetAuthor(id);
+app.MapPut("/api/posts/{id:int}/upvote", (DataService service, int id) =>
+{
+    var ok = service.UpvotePost(id);
+    return ok ? Results.Ok(new { message = "Post upvoted" }) : Results.NotFound(new { message = "Post not found" });
 });
 
-app.MapPost("/api/books", (DataService service, NewBookData data) =>
+app.MapPut("/api/posts/{id:int}/downvote", (DataService service, int id) =>
 {
-    string result = service.CreateBook(data.Titel, data.AuthorId);
-    return new { message = result };
+    var ok = service.DownvotePost(id);
+    return ok ? Results.Ok(new { message = "Post downvoted" }) : Results.NotFound(new { message = "Post not found" });
+});
+
+// ALT TIL COMMENTS HERUNDER
+
+app.MapPost("/api/posts/{id:int}/comments", (DataService service, int id, NewCommentData data) =>
+{
+    var message = service.AddCommentToPost(id, data.author, data.content);
+    return message == "Comment added" ? Results.Ok(new { message }) : Results.NotFound(new { message });
+});
+
+app.MapPut("/api/posts/{postid:int}/comments/{commentid:int}/upvote", (DataService service, int postid, int commentid) =>
+{
+    var ok = service.UpvoteComment(postid, commentid);
+    return ok ? Results.Ok(new { message = "Comment upvoted" }) : Results.NotFound(new { message = "Post or comment not found" });
+});
+
+app.MapPut("/api/posts/{postid:int}/comments/{commentid:int}/downvote", (DataService service, int postid, int commentid) =>
+{
+    var ok = service.DownvoteComment(postid, commentid);
+    return ok ? Results.Ok(new { message = "Comment downvoted" }) : Results.NotFound(new { message = "Post or comment not found" });
 });
 
 app.Run();
 
-record NewBookData(string Titel, int AuthorId);
+record NewPostData(string author, string title, string content);
+record NewCommentData(string author, string content);
